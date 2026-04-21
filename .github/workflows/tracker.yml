@@ -1,47 +1,109 @@
-name: X Post Tracker
+import os
+import json
+import feedparser
+import requests
 
-on:
-  schedule:
-    - cron: "0 * * * *"   # runs at the top of every hour
-  workflow_dispatch:        # lets you trigger it manually from GitHub UI
+# ── Settings ────────────────────────────────────────────────────────────────
+RSS_URL        = "https://rsshub.app/twitter/user/IncomeSharks"
+SEEN_IDS_FILE  = "seen_ids.json"
+BOT_TOKEN      = os.environ["TELEGRAM_BOT_TOKEN"]
+CHAT_ID        = os.environ["TELEGRAM_CHAT_ID"]
+MAX_TEXT_LEN   = 300
 
-jobs:
-  track:
-    runs-on: ubuntu-latest
+# Pretend to be a real browser so RSSHub doesn't block us
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
+}
 
-    # ── Give the job permission to commit files back to the repo ───────────
-    permissions:
-      contents: write
 
-    steps:
-      # 1. Check out your repository (including seen_ids.json)
-      - name: Checkout repo
-        uses: actions/checkout@v4
+# ── Helpers ──────────────────────────────────────────────────────────────────
+def load_seen_ids():
+    with open(SEEN_IDS_FILE, "r") as f:
+        return set(json.load(f))
 
-      # 2. Set up Python
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
-      # 3. Install the two dependencies
-      - name: Install dependencies
-        run: pip install requests feedparser
+def save_seen_ids(seen_ids):
+    with open(SEEN_IDS_FILE, "w") as f:
+        json.dump(list(seen_ids), f, indent=2)
 
-      # 4. Run the tracker script
-      #    The secrets you added in GitHub are passed as environment variables.
-      - name: Run tracker
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python tracker.py
 
-      # 5. Commit the updated seen_ids.json back to the repo
-      #    (Only runs if the file actually changed.)
-      - name: Save seen IDs
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add seen_ids.json
-          git diff --cached --quiet || git commit -m "chore: update seen_ids [skip ci]"
-          git push
+def is_reply(entry):
+    title   = (entry.get("title")   or "").strip()
+    summary = (entry.get("summary") or "").strip()
+    for text in (title, summary):
+        if text.startswith("@") or text.startswith("RT @"):
+            return True
+    return False
+
+
+def send_telegram(text, link):
+    body = (
+        f"🦈 New post from @IncomeSharks\n\n"
+        f"{text}\n\n"
+        f"→ {link}"
+    )
+    url  = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    resp = requests.post(url, json={"chat_id": CHAT_ID, "text": body})
+    resp.raise_for_status()
+    print(f"  ✅ Sent: {link}")
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+def main():
+    print("Fetching RSS feed …")
+
+    # Fetch raw XML ourselves with browser-like headers
+    try:
+        resp = requests.get(RSS_URL, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        print(f"⚠️  Could not reach RSSHub: {e}")
+        print("Skipping this run — will retry next hour.")
+        return
+
+    # Parse the XML
+    feed = feedparser.parse(resp.text)
+
+    # If still broken, exit cleanly instead of crashing
+    if feed.bozo and not feed.entries:
+        print(f"⚠️  RSS feed returned invalid XML: {feed.bozo_exception}")
+        print("Skipping this run — will retry next hour.")
+        return
+
+    entries = feed.entries
+    print(f"Found {len(entries)} items in feed.")
+
+    seen_ids = load_seen_ids()
+    new_count = 0
+
+    for entry in entries:
+        post_id = entry.get("id") or entry.get("link")
+        if not post_id:
+            continue
+
+        if post_id in seen_ids:
+            continue
+
+        if is_reply(entry):
+            print(f"  ⏭  Skipping reply/RT: {post_id}")
+            seen_ids.add(post_id)
+            continue
+
+        raw_text = (entry.get("title") or entry.get("summary") or "").strip()
+        preview  = raw_text[:MAX_TEXT_LEN] + ("…" if len(raw_text) > MAX_TEXT_LEN else "")
+        link     = entry.get("link", "")
+
+        send_telegram(preview, link)
+        seen_ids.add(post_id)
+        new_count += 1
+
+    save_seen_ids(seen_ids)
+    print(f"Done. {new_count} new post(s) sent.")
+
+
+if __name__ == "__main__":
+    main()
