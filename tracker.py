@@ -4,7 +4,7 @@ import feedparser
 import requests
 
 # ── Settings ────────────────────────────────────────────────────────────────
-RSS_URL        = "https://rsshub.app/twitter/user/IncomeSharks"
+RSS_URL        = "https://rsshub.rss.plus/twitter/user/IncomeSharks"
 SEEN_IDS_FILE  = "seen_ids.json"
 BOT_TOKEN      = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID        = os.environ["TELEGRAM_CHAT_ID"]
