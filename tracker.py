@@ -4,13 +4,12 @@ import feedparser
 import requests
 
 # ── Settings ────────────────────────────────────────────────────────────────
-RSS_URL        = "https://rsshub.rss.plus/twitter/user/IncomeSharks"
+RSS_URL        = "https://rss.fatpandadev.com/twitter/user/IncomeSharks"
 SEEN_IDS_FILE  = "seen_ids.json"
 BOT_TOKEN      = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID        = os.environ["TELEGRAM_CHAT_ID"]
 MAX_TEXT_LEN   = 300
 
-# Pretend to be a real browser so RSSHub doesn't block us
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -20,7 +19,6 @@ HEADERS = {
 }
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
 def load_seen_ids():
     with open(SEEN_IDS_FILE, "r") as f:
         return set(json.load(f))
@@ -52,23 +50,19 @@ def send_telegram(text, link):
     print(f"  ✅ Sent: {link}")
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
 def main():
     print("Fetching RSS feed …")
 
-    # Fetch raw XML ourselves with browser-like headers
     try:
-        resp = requests.get(RSS_URL, headers=HEADERS, timeout=30)
+        resp = requests.get(RSS_URL, headers=HEADERS, timeout=30, verify=False)
         resp.raise_for_status()
     except requests.RequestException as e:
         print(f"⚠️  Could not reach RSSHub: {e}")
         print("Skipping this run — will retry next hour.")
         return
 
-    # Parse the XML
     feed = feedparser.parse(resp.text)
 
-    # If still broken, exit cleanly instead of crashing
     if feed.bozo and not feed.entries:
         print(f"⚠️  RSS feed returned invalid XML: {feed.bozo_exception}")
         print("Skipping this run — will retry next hour.")
