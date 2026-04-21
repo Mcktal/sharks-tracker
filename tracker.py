@@ -10,26 +10,28 @@ BOT_TOKEN      = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID        = os.environ["TELEGRAM_CHAT_ID"]
 MAX_TEXT_LEN   = 300
 
+# Pretend to be a real browser so RSSHub doesn't block us
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
+}
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def load_seen_ids():
-    """Read the list of already-sent post IDs from the JSON file."""
     with open(SEEN_IDS_FILE, "r") as f:
         return set(json.load(f))
 
 
 def save_seen_ids(seen_ids):
-    """Write the updated set of post IDs back to the JSON file."""
     with open(SEEN_IDS_FILE, "w") as f:
         json.dump(list(seen_ids), f, indent=2)
 
 
 def is_reply(entry):
-    """
-    Return True if this post is a reply or retweet.
-    Replies start with '@'.  Retweets start with 'RT @'.
-    We check both the title and the summary (description).
-    """
     title   = (entry.get("title")   or "").strip()
     summary = (entry.get("summary") or "").strip()
     for text in (title, summary):
@@ -39,7 +41,6 @@ def is_reply(entry):
 
 
 def send_telegram(text, link):
-    """Send one Telegram message."""
     body = (
         f"🦈 New post from @IncomeSharks\n\n"
         f"{text}\n\n"
@@ -47,17 +48,31 @@ def send_telegram(text, link):
     )
     url  = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     resp = requests.post(url, json={"chat_id": CHAT_ID, "text": body})
-    resp.raise_for_status()          # crash loudly if Telegram says no
+    resp.raise_for_status()
     print(f"  ✅ Sent: {link}")
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 def main():
     print("Fetching RSS feed …")
-    feed = feedparser.parse(RSS_URL)
 
-    if feed.bozo:                    # feedparser sets this on parse errors
-        raise RuntimeError(f"RSS parse error: {feed.bozo_exception}")
+    # Fetch raw XML ourselves with browser-like headers
+    try:
+        resp = requests.get(RSS_URL, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        print(f"⚠️  Could not reach RSSHub: {e}")
+        print("Skipping this run — will retry next hour.")
+        return
+
+    # Parse the XML
+    feed = feedparser.parse(resp.text)
+
+    # If still broken, exit cleanly instead of crashing
+    if feed.bozo and not feed.entries:
+        print(f"⚠️  RSS feed returned invalid XML: {feed.bozo_exception}")
+        print("Skipping this run — will retry next hour.")
+        return
 
     entries = feed.entries
     print(f"Found {len(entries)} items in feed.")
@@ -71,14 +86,13 @@ def main():
             continue
 
         if post_id in seen_ids:
-            continue                 # already processed
+            continue
 
         if is_reply(entry):
             print(f"  ⏭  Skipping reply/RT: {post_id}")
-            seen_ids.add(post_id)   # still mark as seen so we don't check again
+            seen_ids.add(post_id)
             continue
 
-        # Build the text preview
         raw_text = (entry.get("title") or entry.get("summary") or "").strip()
         preview  = raw_text[:MAX_TEXT_LEN] + ("…" if len(raw_text) > MAX_TEXT_LEN else "")
         link     = entry.get("link", "")
